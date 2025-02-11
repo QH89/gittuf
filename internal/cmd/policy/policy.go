@@ -7,6 +7,7 @@ import (
 	"github.com/gittuf/gittuf/internal/cmd/policy/addkey"
 	"github.com/gittuf/gittuf/internal/cmd/policy/addperson"
 	"github.com/gittuf/gittuf/internal/cmd/policy/addrule"
+	"github.com/gittuf/gittuf/internal/cmd/policy/hooks"
 	i "github.com/gittuf/gittuf/internal/cmd/policy/init"
 	"github.com/gittuf/gittuf/internal/cmd/policy/listprincipals"
 	"github.com/gittuf/gittuf/internal/cmd/policy/listrules"
@@ -41,6 +42,7 @@ func New() *cobra.Command {
 	cmd.AddCommand(apply.New())
 	cmd.AddCommand(discard.New())
 	cmd.AddCommand(addrule.New(o))
+	cmd.AddCommand(hooks.New())
 	cmd.AddCommand(listprincipals.New())
 	cmd.AddCommand(listrules.New())
 	cmd.AddCommand(remote.New())

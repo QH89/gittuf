@@ -4,11 +4,17 @@
 package gittuf
 
 import (
+	"crypto/sha256"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gittuf/gittuf/internal/common/set"
+	"github.com/gittuf/gittuf/internal/dev"
+	"github.com/gittuf/gittuf/internal/gitinterface"
 	"github.com/gittuf/gittuf/internal/policy"
 	"github.com/gittuf/gittuf/internal/signerverifier/gpg"
+	artifacts "github.com/gittuf/gittuf/internal/testartifacts"
 	"github.com/gittuf/gittuf/internal/tuf"
 	tufv01 "github.com/gittuf/gittuf/internal/tuf/v01"
 	"github.com/stretchr/testify/assert"
@@ -345,4 +351,300 @@ func TestSignTargets(t *testing.T) {
 	}
 
 	assert.Equal(t, 2, len(state.TargetsEnvelope.Signatures))
+}
+
+func TestAddHook(t *testing.T) {
+	t.Setenv(dev.DevModeKey, "1")
+
+	targetsSigner := setupSSHKeysForSigning(t, targetsKeyBytes, targetsPubKeyBytes)
+	targetsPubKey := tufv01.NewKeyFromSSLibKey(targetsSigner.MetadataKey())
+
+	tmpDir := t.TempDir()
+
+	hookPath := filepath.Join(tmpDir, "hello.lua")
+	if err := os.WriteFile(hookPath, artifacts.SampleHookScript, 0o500); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+
+	t.Run("valid pre-commit hook", func(t *testing.T) {
+		r := createTestRepositoryWithPolicy(t, "")
+
+		hookStage := "pre-commit"
+		hookName := "test-hook"
+		environment := "lua"
+		modules := []string{}
+		principals := []string{targetsPubKey.KeyID}
+
+		hookBytes, err := os.ReadFile(hookPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		hookHash, err := r.r.WriteBlob(hookBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		sha256Hash := sha256.New()
+		sha256Hash.Write(hookBytes)
+		sha256HashSum := sha256Hash.Sum(nil)
+
+		state, err := policy.LoadCurrentState(testCtx, r.r, policy.PolicyStagingRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		targetsMetadata, err := state.GetTargetsMetadata(policy.TargetsRoleName, false)
+		assert.Nil(t, err)
+		hooks, err := targetsMetadata.GetHooks("pre-commit")
+		assert.Nil(t, err)
+		assert.Equal(t, 0, len(hooks))
+
+		if err := r.AddPrincipalToTargets(testCtx, targetsSigner, policy.TargetsRoleName, []tuf.Principal{targetsPubKey}, false); err != nil {
+			t.Fatal(err)
+		}
+
+		err = r.AddHook(testCtx, targetsSigner, policy.TargetsRoleName, hookName, hookPath, hookStage, environment, modules, principals, true)
+		assert.Nil(t, err)
+
+		state, err = policy.LoadCurrentState(testCtx, r.r, policy.PolicyStagingRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		targetsMetadata, err = state.GetTargetsMetadata(policy.TargetsRoleName, false)
+		assert.Nil(t, err)
+		hooks, err = targetsMetadata.GetHooks("pre-commit")
+		assert.Nil(t, err)
+		assert.Equal(t, hooks["test-hook"], &tufv01.Hook{
+			Name:         hookName,
+			PrincipalIDs: set.NewSetFromItems(targetsPubKey.KeyID),
+			Hashes:       map[string]gitinterface.Hash{"sha1": hookHash, "sha256": sha256HashSum},
+			Environment:  "lua",
+			Modules:      []string{},
+		})
+	})
+
+	t.Run("valid pre-push hook", func(t *testing.T) {
+		r := createTestRepositoryWithPolicy(t, "")
+
+		hookStage := "pre-push"
+		hookName := "test-hook"
+		environment := "lua"
+		modules := []string{}
+		principals := []string{targetsPubKey.KeyID}
+
+		hookBytes, err := os.ReadFile(hookPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		hookHash, err := r.r.WriteBlob(hookBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		sha256Hash := sha256.New()
+		sha256Hash.Write(hookBytes)
+		sha256HashSum := sha256Hash.Sum(nil)
+
+		state, err := policy.LoadCurrentState(testCtx, r.r, policy.PolicyStagingRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		targetsMetadata, err := state.GetTargetsMetadata(policy.TargetsRoleName, false)
+		assert.Nil(t, err)
+		hooks, err := targetsMetadata.GetHooks("pre-push")
+		assert.Nil(t, err)
+		assert.Equal(t, 0, len(hooks))
+
+		if err := r.AddPrincipalToTargets(testCtx, targetsSigner, policy.TargetsRoleName, []tuf.Principal{targetsPubKey}, false); err != nil {
+			t.Fatal(err)
+		}
+
+		err = r.AddHook(testCtx, targetsSigner, policy.TargetsRoleName, hookName, hookPath, hookStage, environment, modules, principals, true)
+		assert.Nil(t, err)
+
+		state, err = policy.LoadCurrentState(testCtx, r.r, policy.PolicyStagingRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		targetsMetadata, err = state.GetTargetsMetadata(policy.TargetsRoleName, false)
+		assert.Nil(t, err)
+		hooks, err = targetsMetadata.GetHooks("pre-push")
+		assert.Nil(t, err)
+		assert.Equal(t, hooks["test-hook"], &tufv01.Hook{
+			Name:         hookName,
+			PrincipalIDs: set.NewSetFromItems(targetsPubKey.KeyID),
+			Hashes:       map[string]gitinterface.Hash{"sha1": hookHash, "sha256": sha256HashSum},
+			Environment:  "lua",
+			Modules:      []string{},
+		})
+	})
+
+	t.Run("invalid hook stage", func(t *testing.T) {
+		r := createTestRepositoryWithPolicy(t, "")
+
+		hookStage := "invalid-stage"
+		hookName := "test-hook"
+		environment := "lua"
+		modules := []string{}
+		principals := []string{targetsPubKey.KeyID}
+
+		if err := r.AddPrincipalToTargets(testCtx, targetsSigner, policy.TargetsRoleName, []tuf.Principal{targetsPubKey}, false); err != nil {
+			t.Fatal(err)
+		}
+
+		err := r.AddHook(testCtx, targetsSigner, policy.TargetsRoleName, hookName, hookPath, hookStage, environment, modules, principals, true)
+		assert.ErrorIs(t, err, tuf.ErrInvalidHookStage)
+
+		state, err := policy.LoadCurrentState(testCtx, r.r, policy.PolicyStagingRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		targetsMetadata, err := state.GetTargetsMetadata(policy.TargetsRoleName, false)
+		assert.Nil(t, err)
+		hooks, err := targetsMetadata.GetHooks("pre-commit")
+		assert.Nil(t, err)
+		assert.Equal(t, 0, len(hooks))
+	})
+}
+
+func TestRemoveHook(t *testing.T) {
+	t.Setenv(dev.DevModeKey, "1")
+
+	targetsSigner := setupSSHKeysForSigning(t, targetsKeyBytes, targetsPubKeyBytes)
+	targetsPubKey := tufv01.NewKeyFromSSLibKey(targetsSigner.MetadataKey())
+
+	tmpDir := t.TempDir()
+
+	hookPath := filepath.Join(tmpDir, "hello.lua")
+	if err := os.WriteFile(hookPath, artifacts.SampleHookScript, 0o500); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+
+	t.Run("valid pre-commit hook", func(t *testing.T) {
+		r := createTestRepositoryWithPolicy(t, "")
+
+		hookStage := "pre-commit"
+		hookName := "test-hook"
+		environment := "lua"
+		modules := []string{}
+		principals := []string{targetsPubKey.KeyID}
+
+		state, err := policy.LoadCurrentState(testCtx, r.r, policy.PolicyStagingRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Check that there are no hooks present
+		targetsMetadata, err := state.GetTargetsMetadata(policy.TargetsRoleName, false)
+		assert.Nil(t, err)
+		hooks, err := targetsMetadata.GetHooks(hookStage)
+		assert.Nil(t, err)
+		assert.Equal(t, 0, len(hooks))
+
+		// Add hook
+		if err := r.AddPrincipalToTargets(testCtx, targetsSigner, policy.TargetsRoleName, []tuf.Principal{targetsPubKey}, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.AddHook(testCtx, targetsSigner, policy.TargetsRoleName, hookName, hookPath, hookStage, environment, modules, principals, true); err != nil {
+			t.Fatal(err)
+		}
+		state, err = policy.LoadCurrentState(testCtx, r.r, policy.PolicyStagingRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Check for hook
+		targetsMetadata, err = state.GetTargetsMetadata(policy.TargetsRoleName, false)
+		assert.Nil(t, err)
+		hooks, err = targetsMetadata.GetHooks(hookStage)
+		assert.Nil(t, err)
+		assert.Equal(t, 1, len(hooks))
+
+		// Remove hook
+		err = r.RemoveHook(testCtx, targetsSigner, policy.TargetsRoleName, hookName, hookStage, false)
+		assert.Nil(t, err)
+
+		// Check that the hook was removed
+		state, err = policy.LoadCurrentState(testCtx, r.r, policy.PolicyStagingRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+		targetsMetadata, err = state.GetTargetsMetadata(policy.TargetsRoleName, false)
+		assert.Nil(t, err)
+		hooks, err = targetsMetadata.GetHooks(hookStage)
+		assert.Nil(t, err)
+		assert.Equal(t, 0, len(hooks))
+	})
+
+	t.Run("valid pre-push hook", func(t *testing.T) {
+		r := createTestRepositoryWithPolicy(t, "")
+
+		hookStage := "pre-push"
+		hookName := "test-hook"
+		environment := "lua"
+		modules := []string{}
+		principals := []string{targetsPubKey.KeyID}
+
+		state, err := policy.LoadCurrentState(testCtx, r.r, policy.PolicyStagingRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Check that there are no hooks present
+		targetsMetadata, err := state.GetTargetsMetadata(policy.TargetsRoleName, false)
+		assert.Nil(t, err)
+		hooks, err := targetsMetadata.GetHooks(hookStage)
+		assert.Nil(t, err)
+		assert.Equal(t, 0, len(hooks))
+
+		// Add hook
+		if err := r.AddPrincipalToTargets(testCtx, targetsSigner, policy.TargetsRoleName, []tuf.Principal{targetsPubKey}, false); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.AddHook(testCtx, targetsSigner, policy.TargetsRoleName, hookName, hookPath, hookStage, environment, modules, principals, true); err != nil {
+			t.Fatal(err)
+		}
+		state, err = policy.LoadCurrentState(testCtx, r.r, policy.PolicyStagingRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Check for hook
+		targetsMetadata, err = state.GetTargetsMetadata(policy.TargetsRoleName, false)
+		assert.Nil(t, err)
+		hooks, err = targetsMetadata.GetHooks(hookStage)
+		assert.Nil(t, err)
+		assert.Equal(t, 1, len(hooks))
+
+		// Remove hook
+		err = r.RemoveHook(testCtx, targetsSigner, policy.TargetsRoleName, hookName, hookStage, false)
+		assert.Nil(t, err)
+
+		// Check that the hook was removed
+		state, err = policy.LoadCurrentState(testCtx, r.r, policy.PolicyStagingRef)
+		if err != nil {
+			t.Fatal(err)
+		}
+		targetsMetadata, err = state.GetTargetsMetadata(policy.TargetsRoleName, false)
+		assert.Nil(t, err)
+		hooks, err = targetsMetadata.GetHooks(hookStage)
+		assert.Nil(t, err)
+		assert.Equal(t, 0, len(hooks))
+	})
+
+	t.Run("invalid hook stage", func(t *testing.T) {
+		r := createTestRepositoryWithPolicy(t, "")
+
+		hookStage := "invalid-stage"
+		hookName := "test-hook"
+
+		err := r.RemoveHook(testCtx, targetsSigner, policy.TargetsRoleName, hookName, hookStage, false)
+		assert.ErrorIs(t, err, tuf.ErrInvalidHookStage)
+	})
 }

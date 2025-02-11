@@ -62,6 +62,9 @@ type State struct {
 	DelegationEnvelopes map[string]*sslibdsse.Envelope
 	RootPublicKeys      []tuf.Principal
 
+	PreCommitHooks map[string]gitinterface.Hash
+	PrePushHooks   map[string]gitinterface.Hash
+
 	githubAppApprovalsTrusted bool
 	githubAppKeys             []tuf.Principal
 	githubAppRoleName         string
@@ -779,6 +782,34 @@ func (s *State) HasTargetsRole(roleName string) bool {
 
 func (s *State) HasRuleName(name string) bool {
 	return s.ruleNames.Has(name)
+}
+
+// LoadHooksIntoState populates the hooks fields inside the state with the hooks
+// currently defined in the metadata.
+func (s *State) LoadHooksIntoState(t tuf.TargetsMetadata) error {
+	hooks, err := t.GetHooks("pre-commit")
+	if err != nil {
+		return err
+	}
+
+	s.PreCommitHooks = make(map[string]gitinterface.Hash)
+
+	for name, hook := range hooks {
+		s.PreCommitHooks[name] = hook.GetHashes()["sha1"]
+	}
+
+	hooks, err = t.GetHooks("pre-push")
+	if err != nil {
+		return err
+	}
+
+	s.PrePushHooks = make(map[string]gitinterface.Hash)
+
+	for name, hook := range hooks {
+		s.PreCommitHooks[name] = hook.GetHashes()["sha1"]
+	}
+
+	return nil
 }
 
 // preprocess handles several "one time" tasks when the state is first loaded.

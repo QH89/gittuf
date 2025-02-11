@@ -58,10 +58,7 @@ var (
 // State contains the full set of metadata and root keys present in a policy
 // state.
 type State struct {
-	RootEnvelope        *sslibdsse.Envelope
-	TargetsEnvelope     *sslibdsse.Envelope
-	DelegationEnvelopes map[string]*sslibdsse.Envelope
-	RootPublicKeys      []tuf.Principal
+	Metadata *StateMetadata
 
 	githubAppApprovalsTrusted bool
 	githubAppKeys             []tuf.Principal
@@ -73,6 +70,12 @@ type State struct {
 	allPrincipals  map[string]tuf.Principal
 	hasFileRule    bool
 	globalRules    []tuf.GlobalRule
+}
+
+type StateMetadata struct {
+	RootEnvelope        *sslibdsse.Envelope
+	TargetsEnvelope     *sslibdsse.Envelope
+	DelegationEnvelopes map[string]*sslibdsse.Envelope
 }
 
 // LoadState returns the State of the repository's policy corresponding to the
@@ -127,7 +130,7 @@ func LoadState(ctx context.Context, repo *gitinterface.Repository, requestedEntr
 			threshold:  len(options.InitialRootPrincipals),
 		}
 
-		_, err = verifier.Verify(ctx, nil, state.RootEnvelope)
+		_, err = verifier.Verify(ctx, nil, state.Metadata.RootEnvelope)
 		return state, err
 	}
 
@@ -172,7 +175,7 @@ func LoadState(ctx context.Context, repo *gitinterface.Repository, requestedEntr
 			threshold:  len(options.InitialRootPrincipals),
 		}
 
-		_, err = verifier.Verify(ctx, nil, initialPolicyState.RootEnvelope)
+		_, err = verifier.Verify(ctx, nil, initialPolicyState.Metadata.RootEnvelope)
 		if err != nil {
 			return nil, err
 		}
@@ -426,22 +429,12 @@ func (s *State) GetAllPrincipals() map[string]tuf.Principal {
 // top level Targets role and all reachable delegated Targets roles. Any
 // unreachable role returns an error.
 func (s *State) Verify(ctx context.Context) error {
-	// Check consistency of root keys
-	rootKeys, err := s.GetRootKeys()
-	if err != nil {
-		return err
-	}
-	// TODO: do we need this?
-	if !verifyRootKeysMatch(rootKeys, s.RootPublicKeys) {
-		return ErrUnableToMatchRootKeys
-	}
-
 	rootVerifier, err := s.getRootVerifier()
 	if err != nil {
 		return err
 	}
 
-	if _, err := rootVerifier.Verify(ctx, gitinterface.ZeroHash, s.RootEnvelope); err != nil {
+	if _, err := rootVerifier.Verify(ctx, gitinterface.ZeroHash, s.Metadata.RootEnvelope); err != nil {
 		return err
 	}
 
@@ -459,7 +452,7 @@ func (s *State) Verify(ctx context.Context) error {
 	}
 
 	// Check top-level targets
-	if s.TargetsEnvelope == nil {
+	if s.Metadata.TargetsEnvelope == nil {
 		return nil
 	}
 
@@ -468,7 +461,7 @@ func (s *State) Verify(ctx context.Context) error {
 		return err
 	}
 
-	if _, err := targetsVerifier.Verify(ctx, gitinterface.ZeroHash, s.TargetsEnvelope); err != nil {
+	if _, err := targetsVerifier.Verify(ctx, gitinterface.ZeroHash, s.Metadata.TargetsEnvelope); err != nil {
 		return err
 	}
 
@@ -479,7 +472,7 @@ func (s *State) Verify(ctx context.Context) error {
 
 	// Check reachable delegations
 	reachedDelegations := map[string]bool{}
-	for delegatedRoleName := range s.DelegationEnvelopes {
+	for delegatedRoleName := range s.Metadata.DelegationEnvelopes {
 		reachedDelegations[delegatedRoleName] = false
 	}
 
@@ -498,7 +491,7 @@ func (s *State) Verify(ctx context.Context) error {
 		if s.HasTargetsRole(delegation.ID()) {
 			reachedDelegations[delegation.ID()] = true
 
-			env := s.DelegationEnvelopes[delegation.ID()]
+			env := s.Metadata.DelegationEnvelopes[delegation.ID()]
 
 			principals := []tuf.Principal{}
 			for _, principalID := range delegation.GetPrincipalIDs().Contents() {
@@ -545,13 +538,13 @@ func (s *State) Commit(repo *gitinterface.Repository, commitMessage string, sign
 	}
 
 	metadata := map[string]*sslibdsse.Envelope{}
-	metadata[RootRoleName] = s.RootEnvelope
-	if s.TargetsEnvelope != nil {
-		metadata[TargetsRoleName] = s.TargetsEnvelope
+	metadata[RootRoleName] = s.Metadata.RootEnvelope
+	if s.Metadata.TargetsEnvelope != nil {
+		metadata[TargetsRoleName] = s.Metadata.TargetsEnvelope
 	}
 
-	if s.DelegationEnvelopes != nil {
-		for k, v := range s.DelegationEnvelopes {
+	if s.Metadata.DelegationEnvelopes != nil {
+		for k, v := range s.Metadata.DelegationEnvelopes {
 			metadata[k] = v
 		}
 	}
@@ -702,7 +695,7 @@ func (s *State) GetRootKeys() ([]tuf.Principal, error) {
 // The `migrate` parameter determines if the schema must be converted to a newer
 // version.
 func (s *State) GetRootMetadata(migrate bool) (tuf.RootMetadata, error) {
-	payloadBytes, err := s.RootEnvelope.DecodeB64Payload()
+	payloadBytes, err := s.Metadata.RootEnvelope.DecodeB64Payload()
 	if err != nil {
 		return nil, err
 	}
@@ -750,9 +743,9 @@ func (s *State) GetRootMetadata(migrate bool) (tuf.RootMetadata, error) {
 // TargetsEnvelope for the specified `roleName`.  The `migrate` parameter
 // determines if the schema must be converted to a newer version.
 func (s *State) GetTargetsMetadata(roleName string, migrate bool) (tuf.TargetsMetadata, error) {
-	e := s.TargetsEnvelope
+	e := s.Metadata.TargetsEnvelope
 	if roleName != TargetsRoleName {
-		env, ok := s.DelegationEnvelopes[roleName]
+		env, ok := s.Metadata.DelegationEnvelopes[roleName]
 		if !ok {
 			return nil, ErrMetadataNotFound
 		}
@@ -809,10 +802,10 @@ func (s *State) GetTargetsMetadata(roleName string, migrate bool) (tuf.TargetsMe
 
 func (s *State) HasTargetsRole(roleName string) bool {
 	if roleName == TargetsRoleName {
-		return s.TargetsEnvelope != nil
+		return s.Metadata.TargetsEnvelope != nil
 	}
 
-	_, ok := s.DelegationEnvelopes[roleName]
+	_, ok := s.Metadata.DelegationEnvelopes[roleName]
 	return ok
 }
 
@@ -839,7 +832,7 @@ func (s *State) preprocess() error {
 		s.allPrincipals[principalID] = principal
 	}
 
-	if s.TargetsEnvelope == nil {
+	if s.Metadata.TargetsEnvelope == nil {
 		return nil
 	}
 
@@ -876,11 +869,11 @@ func (s *State) preprocess() error {
 		}
 	}
 
-	if len(s.DelegationEnvelopes) == 0 {
+	if len(s.Metadata.DelegationEnvelopes) == 0 {
 		return nil
 	}
 
-	for delegatedRoleName := range s.DelegationEnvelopes {
+	for delegatedRoleName := range s.Metadata.DelegationEnvelopes {
 		delegatedMetadata, err := s.GetTargetsMetadata(delegatedRoleName, false)
 		if err != nil {
 			return err
@@ -1002,17 +995,17 @@ func loadStateForEntry(repo *gitinterface.Repository, entry rsl.ReferenceUpdater
 			metadataName := strings.TrimPrefix(name, metadataTreeEntryName+"/")
 			switch metadataName {
 			case fmt.Sprintf("%s.json", RootRoleName):
-				state.RootEnvelope = env
+				state.Metadata.RootEnvelope = env
 
 			case fmt.Sprintf("%s.json", TargetsRoleName):
-				state.TargetsEnvelope = env
+				state.Metadata.TargetsEnvelope = env
 
 			default:
-				if state.DelegationEnvelopes == nil {
-					state.DelegationEnvelopes = map[string]*sslibdsse.Envelope{}
+				if state.Metadata.DelegationEnvelopes == nil {
+					state.Metadata.DelegationEnvelopes = map[string]*sslibdsse.Envelope{}
 				}
 
-				state.DelegationEnvelopes[strings.TrimSuffix(metadataName, ".json")] = env
+				state.Metadata.DelegationEnvelopes[strings.TrimSuffix(metadataName, ".json")] = env
 			}
 		}
 	}
@@ -1025,12 +1018,6 @@ func loadStateForEntry(repo *gitinterface.Repository, entry rsl.ReferenceUpdater
 	if err != nil {
 		return nil, err
 	}
-
-	rootPrincipals, err := rootMetadata.GetRootPrincipals()
-	if err != nil {
-		return nil, err
-	}
-	state.RootPublicKeys = rootPrincipals
 
 	state.githubAppApprovalsTrusted = rootMetadata.IsGitHubAppApprovalTrusted()
 
